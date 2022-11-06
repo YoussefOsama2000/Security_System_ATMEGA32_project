@@ -1,0 +1,340 @@
+/***********************************************************************************/
+/*                             includes					                            */
+/************************************************************************************/
+#include "keypad.h"
+#include "lcd.h"
+#include "std_types.h"
+#include "timer1.h"
+#include "uart.h"
+#include "util/delay.h"
+#include "avr/io.h"
+
+/***********************************************************************************/
+/*                  commands between two micro-controllers                         */
+/************************************************************************************/
+/*control MCU send*/
+
+#define memoryErrorCommand '!'
+#define systemHavePasswordCommand '#'
+#define systemNHavePasswordCommand '$'
+#define setNewPass_nMatchCommand '%'
+#define setNewPass_MatchCommand '&'
+#define alertCommand 'a'
+#define stopAlertCommand 's'
+#define wrongPassCommand 'w'
+#define correctPassCommand 'c'
+#define openningDoorCommand 'o'
+#define closingDoorCommand 'd'
+
+/************************************/
+
+/*human interface MCU send*/
+
+#define startHandshakeCommand '@'
+#define openDoorCommand '*'
+#define resetPassCommand '('
+
+
+/***********************************************************************************/
+/*                             function declarations                  		    */
+/************************************************************************************/
+/*
+ *this function initialize all system peripherals
+ */
+void initializeSystem(void);
+/*
+ *this function responsible for handling memory error if exist
+ */
+void checkmemory (void);
+/*
+ *this function responsible for handling setting new password task
+ */
+void setNewPass(void);
+/*
+ *this function responsible for checking if entered password is the correct password
+ * returns 1 if password is correct
+ * returns 0 if password is incorrect
+ */
+char checkPass(void);
+/*
+ *this function handles alerts
+ */
+void alert(void);
+/*
+ *this function is called when timer fire
+ */
+void Timer1Callback(void);
+/*
+ *this function handles how door opening
+ */
+void doorOpening(void);
+/***********************************************************************************/
+/*                             global variables		                      		    */
+/************************************************************************************/
+uint8 g_UART_receive_flag=0;
+uint8 g_UART_received_data=0;
+Timer1_ConfigType g_config_timer;
+static uint16 g_timerTickCounter=0;
+/***********************************************************************************/
+/*                             function definitions                      		    */
+/************************************************************************************/
+/*
+ *this function handles how door opening
+ */
+void doorOpening(void){
+					Timer1_init(&g_config_timer);
+					LCD_clearScreen();
+					while(g_UART_receive_flag!=1);
+					g_UART_receive_flag=0;
+					LCD_displayString("Door is opening");
+					while(g_timerTickCounter<5);
+
+					LCD_clearScreen();
+					LCD_displayString("Door opened");
+					while(g_UART_receive_flag!=1);
+					g_UART_receive_flag=0;
+					LCD_clearScreen();
+					LCD_displayString("Door is Closing");
+					g_timerTickCounter=0;
+					while(g_timerTickCounter<5);
+					LCD_clearScreen();
+					Timer1_deInit();
+					g_timerTickCounter=0;
+}
+/*
+ *this function is called when timer fire
+ */
+void Timer1Callback(void){
+	g_timerTickCounter++;
+}
+/*
+ *this function handles alerts
+ */
+void alert(void){
+
+}
+/*
+ *this function responsible for checking if entered password is the correct password
+ * returns 1 if password is correct
+ * returns 0 if password is incorrect
+ */
+char checkPass(void){
+	uint8 arr1[5];
+	uint8 counter=0;
+	uint8 numberOfWrongPass =0;
+	LCD_clearScreen();
+	LCD_displayString("Enter the pass.");
+	LCD_moveCursor(1, 0);
+	for(counter=0;counter<5;counter++){
+		arr1[counter]=KEYPAD_getPressedKey();
+		LCD_displayCharacter(arr1[counter]);
+		UART_sendByte(arr1[counter]);
+		if(counter<4)_delay_ms(200);
+	}
+	/*waiting for control micro-controler to respond*/
+	while(g_UART_receive_flag!=1){}
+	g_UART_receive_flag=0;
+	switch (g_UART_received_data) {
+	case correctPassCommand:
+		LCD_clearScreen();
+		LCD_displayString("correct password");
+		//TODO:: show the user what is happening on the lcd
+		return 1;
+		break;
+	case wrongPassCommand:
+		/*waiting for number of attempts the user have*/
+		while(g_UART_receive_flag!=1){}
+		g_UART_receive_flag=0;
+		numberOfWrongPass=g_UART_received_data;
+		LCD_clearScreen();
+		LCD_displayString("wrong password");
+		LCD_moveCursor(1, 0);
+		LCD_displayString("you have ");
+		LCD_intgerToString(3-numberOfWrongPass);
+		LCD_displayString("attempts");
+		_delay_ms(500);
+		if(g_UART_receive_flag==1&&g_UART_received_data==alertCommand)
+		{
+			g_UART_receive_flag=0;
+			alert();
+		}
+		return 0;
+		break;
+
+	}
+	return 0;
+}
+/*
+ *this function responsible for handling setting new password task
+ */
+void setNewPass(void){
+	uint8 arr[5];
+	uint8 counter=0;
+	while(1){
+		/*Receiving new password from the user*/
+		LCD_clearScreen();
+		LCD_displayString("Enter a password");
+		LCD_moveCursor(1, 0);
+		LCD_sendCommand(LCD_CURSOR_ON);
+		for(counter=0;counter<5;counter++){
+			arr[counter]= KEYPAD_getPressedKey();
+			LCD_displayCharacter('*');
+			_delay_ms(200);
+		}
+		/*sending the received password to control micro-controler*/
+		for(counter=0;counter<5;counter++)
+		{
+			UART_sendByte(arr[counter]);
+			_delay_ms(50);
+		}
+		/*asking user to re-enter the password*/
+		LCD_clearScreen();
+		LCD_displayString("Re-enter password");
+		LCD_moveCursor(1, 0);
+		LCD_sendCommand(LCD_CURSOR_ON);
+		for(counter=0;counter<5;counter++){
+			arr[counter]= KEYPAD_getPressedKey();
+			LCD_displayCharacter('*');
+			if(counter<4)_delay_ms(200);
+		}
+		/*sending re-entered password to control micro-controler*/
+		for(counter=0;counter<5;counter++)
+		{
+			UART_sendByte(arr[counter]);
+			_delay_ms(50);
+		}
+		/*waiting for control micro-controler response*/
+		while(g_UART_receive_flag!=1){}
+		g_UART_receive_flag=0;
+		if(g_UART_received_data==setNewPass_MatchCommand)
+		{
+			LCD_clearScreen();
+			LCD_displayString("password set");
+			LCD_moveCursor(1, 0);
+			LCD_displayString("successfully");
+			LCD_sendCommand(LCD_CURSOR_OFF);
+			_delay_ms(1000);
+			return;
+		}else if(g_UART_received_data==setNewPass_nMatchCommand){
+			LCD_clearScreen();
+			LCD_displayString("not matched");
+			LCD_moveCursor(1, 0);
+			LCD_displayString("enter new pass");
+			_delay_ms(1000);
+		}
+	}
+	LCD_sendCommand(LCD_CURSOR_OFF);
+}
+/*
+ *this function responsible for handling memory error if exist
+ */
+void checkmemory (void){
+	/*display for the user current system state*/
+	LCD_displayString("checking memory");
+	/*waiting for signal from control micro-controller*/
+	while(g_UART_receive_flag!=1){}
+	if(g_UART_received_data==memoryErrorCommand)
+	{
+		/*if control micro-controller have error with memory system will stuck and display memory error*/
+		LCD_clearScreen();
+		LCD_displayString("memory error!");
+		while(1){}
+	}
+	else {
+		/*if memory works as expected system will check if there is
+		 * an old password or the user have to enter new password
+		 */
+		LCD_clearScreen();
+		LCD_displayString("loading system");
+		LCD_moveCursor(1, 0);
+		LCD_displayString("data");
+	}
+}
+/*
+ *this function handles the input from the UART
+ */
+void uartCallback(uint8 data){
+	g_UART_receive_flag=1;
+	g_UART_received_data=data;
+}
+/*
+ *this function initialize all system peripherals
+ */
+void initializeSystem(void){
+	/*enable global interrupt*/
+	SREG|=(1<<7);
+	/*initialize LCD*/
+	LCD_init();
+	{
+		/*start configuring UART*/
+		UART_ConfigType configUART;
+		/*configuring baud rate*/
+		configUART.baud_rate=9600;
+		/*configuring parity bit*/
+		configUART.parity=UART_disable_parity;
+		/*configuring stop bit*/
+		configUART.stop_bit=UART_1_stopBit;
+		/*configuring word length*/
+		configUART.bit_data=UART_8_bit_data;
+		/*setting UART callback function*/
+		UART_setCallback(uartCallback);
+		UART_init(&configUART);
+	}
+	_delay_ms(500);
+	/*after everything done this micro-controller will send starting handshake to control controller */
+	UART_sendByte(startHandshakeCommand);
+	/*
+	 *configuring timer
+	 */
+	g_config_timer.mode=Timer1_compareMode;
+	g_config_timer.initial_value=0;
+	/*with pre-scaler 256 and compare value 31250 the counter count 1 second every tick*/
+	g_config_timer.compare_value=31250;
+	g_config_timer.prescaler=Timer1_clk_256_prescaler;
+	Timer1_setCallBack(Timer1Callback);
+}
+int main(){
+	uint8 command=0;
+	initializeSystem();
+	checkmemory();
+	/*waiting control micro-controller if the system have old password or this is the first time for the system to operate*/
+	while(g_UART_receive_flag!=1){}
+	g_UART_receive_flag=0;
+	switch (g_UART_received_data) {
+	/*if the system doesn't have password will let the user know then take steps of setting new password*/
+	case systemNHavePasswordCommand:
+		LCD_clearScreen();
+		LCD_displayString("you have to");
+		LCD_moveCursor(1, 0);
+		LCD_displayString("enter new pass");
+		_delay_ms(500);
+		LCD_clearScreen();
+		setNewPass();
+	default:
+		while(1){
+			LCD_clearScreen();
+			LCD_displayString("+ : open door");
+			LCD_moveCursor(1,0);
+			LCD_displayString("- : change pass");
+			command=KEYPAD_getPressedKey();
+			_delay_ms(200);
+			switch (command) {
+			case '+':
+				UART_sendByte(openDoorCommand);
+				if(checkPass()){
+				doorOpening();
+				}
+				break;
+			case '-':
+				UART_sendByte(resetPassCommand);
+				if(checkPass()){
+					setNewPass();
+				}
+				break;
+			}
+		}
+	}
+
+
+}
+

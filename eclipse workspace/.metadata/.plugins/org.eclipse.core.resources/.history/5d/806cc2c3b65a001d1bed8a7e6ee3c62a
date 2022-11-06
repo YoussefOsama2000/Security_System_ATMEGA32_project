@@ -1,0 +1,21 @@
+/******************************************************************************
+ *
+ * Module: Buzzer driver
+ *
+ * File Name: buzzer.h
+ *
+ * Description: header file for buzzer driver
+ *
+ * Author: Youssef Osama
+ *
+ *******************************************************************************/
+#ifndef BUZZER_H_
+#define BUZZER_H_
+#include "common_macros.h"
+#include "std_types.h"
+#define BUZZER_PORT PORTA_ID
+#define BUZZER_PIN PIN0_ID
+void Buzzer_init();
+void Buzzer_on(void);
+void Buzzer_off(void);
+#endif

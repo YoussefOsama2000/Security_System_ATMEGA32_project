@@ -1,0 +1,380 @@
+/***********************************************************************************/
+/*                             includes					                            */
+/************************************************************************************/
+#include "buzzer.h"
+#include "dc_motor.h"
+#include "pwm.h"
+#include "external_eeprom.h"
+#include "twi.h"
+#include "timer1.h"
+#include "uart.h"
+#include "avr/io.h"
+#include <util/delay.h>
+/***********************************************************************************/
+/*                             memory values and addresses                          */
+/************************************************************************************/
+/*this is an address where the controller will send data then try to read it
+ * to check that the memory is running well*/
+#define checkMemoryAddress 0x02
+/*the key that the controller will send to the memory*/
+#define checkingKey 100
+/*this is an address where the controller will check if it is the first time the system start*/
+#define checkFirstTimeAddress 0x03
+/*if the system used before will have this value*/
+#define notFirstTimeValue 100
+/*password address in the memory*/
+#define passwordAddress ((char*)0x03)
+
+/***********************************************************************************/
+/*                  commands between two micro-controllers                         */
+/************************************************************************************/
+/*control MCU send*/
+
+#define memoryErrorCommand '!'
+#define systemHavePasswordCommand '#'
+#define systemNHavePasswordCommand '$'
+#define setNewPass_nMatchCommand '%'
+#define setNewPass_MatchCommand '&'
+#define alertCommand 'a'
+#define stopAlertCommand 's'
+#define wrongPassCommand 'w'
+#define correctPassCommand 'c'
+#define openningDoorCommand 'o'
+#define closingDoorCommand 'd'
+
+/************************************/
+
+/*human interface MCU send*/
+
+#define startHandshakeCommand '@'
+#define openDoorCommand '*'
+#define resetPassCommand '('
+
+/***********************************************************************************/
+/*                             function declarations                  		    */
+/************************************************************************************/
+/*
+ *this function initialize all system peripherals
+ */
+void initializeSystem(void);
+/*
+ *this function check if the memory works probably , send memoryError to the user if not
+ */
+void checkMemory(void);
+/*
+ *this function take steps of setting new password
+ */
+void setNewPass(void);
+/*
+ *this function handles the input from the UART
+ */
+void uartCallback(uint8 data);
+/*
+ *this function check if there is an old password
+ */
+void isFirstTime(void);
+/*
+ *this function receives 5 characters as password and return it in array
+ */
+void getPass(uint8* arr);
+/*
+ *this function check password and count the number the number of wrong enters
+ *then send an alert to human micro-controler
+ */
+uint8 checkPass(void);
+/*
+ *this function turn on buzzer and send command to human controller to display alarm on
+ *LCD , it stops the door control and keep buzzer on for 30 secs
+ */
+void startAlert(void);
+/*
+ * this function is made to handle door opening
+ */
+void openDoor(void);
+/*
+ *this function is called when timer fire
+ */
+void Timer1Callback(void);
+/***********************************************************************************/
+/*                             global variables		                      		    */
+/************************************************************************************/
+static uint8 g_UART_receive_flag=0;
+static uint8 g_UART_received_data=0;
+static uint8 g_number_wrong_password_counter=0;
+Timer1_ConfigType g_config_timer;
+static uint16 g_timerTickCounter=0;
+/***********************************************************************************/
+/*                             function definitions                      		    */
+/************************************************************************************/
+/*
+ *this function is called when timer fire
+ */
+void Timer1Callback(void){
+	g_timerTickCounter++;
+}
+/*
+ * this function is made to handle door opening
+ */
+void openDoor(void){
+g_config_timer.prescaler=Timer1_clk_256_prescaler;
+Timer1_init(&g_config_timer);
+/*open door*/
+UART_sendByte(openningDoorCommand);
+DcMotor_Rotate(clockwise, 100);
+/*waiting 5 seconds*/
+while(g_timerTickCounter<5);
+g_timerTickCounter=0;
+/*stop door*/
+DcMotor_Rotate(stop,0);
+/*waiting 3 seconds*/
+while(g_timerTickCounter<3);
+g_timerTickCounter=0;
+/*close door*/
+UART_sendByte(closingDoorCommand);
+DcMotor_Rotate(Anti_clokewise, 100);
+/*wait 5 second*/
+while(g_timerTickCounter<5);
+g_timerTickCounter=0;
+/*stop door*/
+DcMotor_Rotate(stop,0);
+/*stop Timer*/
+Timer1_deInit();
+}
+/*
+ *this function turn on buzzer and send command to human controller to display alarm on
+ *LCD , it stops the door control and keep buzzer on for 30 seconds
+ */
+void startAlert(void){
+	UART_sendByte(alertCommand);
+	Buzzer_on();
+	UART_sendByte(stopAlertCommand);
+	Buzzer_off();
+}
+/*
+ *this function check password and count the number the number of wrong enters
+ *then send an alert to human micro-controler
+ */
+uint8 checkPass(void){
+	uint8 arr[5],current;
+	getPass(arr);
+	for(uint8 i=0;i<5;i++){
+		EEPROM_readByte((uint16)(passwordAddress+i), &current);
+		if(arr[i]==current)
+			{continue;}
+		else
+		/*
+		 *if a char doesn't match will return 0 as indication of a wrong password
+		 */
+			{
+			g_number_wrong_password_counter++;
+			UART_sendByte(wrongPassCommand);
+			_delay_ms(10);
+			UART_sendByte(g_number_wrong_password_counter);
+			if(g_number_wrong_password_counter==3)
+			startAlert();
+			return 0;
+			}
+	}
+	/*
+	 *if all characters are matched will return 1 as indication that correct password
+	 */
+	g_number_wrong_password_counter=0;
+	UART_sendByte(correctPassCommand);
+	return 1;
+
+}
+/*
+ *this function receives 5 characters as password and return it in array
+ */
+void getPass(uint8* arr){
+	int count=0;
+	while(count<5){
+		while(g_UART_receive_flag!=1){}
+		arr[count]=g_UART_received_data;
+		count++;
+		g_UART_receive_flag=0;
+	}
+}
+/*
+ *this function handles the input from the UART
+ */
+void uartCallback(uint8 data){
+	g_UART_receive_flag=1;
+	g_UART_received_data=data;
+}
+
+/*
+ *this function check if there is an old password
+ */
+void isFirstTime(void){
+	uint8 FirstTime=0;
+	/*
+	 *first time variable will have the value noFirstTimeValue if it is not the first time the system take password
+	 */
+	EEPROM_readByte(checkFirstTimeAddress,&FirstTime);
+	if(FirstTime==notFirstTimeValue){
+		UART_sendByte(systemHavePasswordCommand);
+	}else {
+		UART_sendByte(systemNHavePasswordCommand);
+		setNewPass();
+		EEPROM_writeByte(checkFirstTimeAddress, notFirstTimeValue);
+	}
+
+}
+/*
+ *this function initialize all system peripherals
+ */
+void initializeSystem(){
+	/*enable global interrupt*/
+	SREG|=(1<<7);
+	/*initializing buzzer*/
+	Buzzer_init();
+	/*initializing DC motor*/
+	DcMotor_init();
+	/*initializing PWM*/
+	PWM_init();
+	{
+		/*start configuring I2C*/
+		TWI_ConfigType configTWI;
+		/*
+		 * setting my address in I2C
+		 */
+		configTWI.address=0x0f;
+		/*
+		 * setting I2C rate to 400Kbps
+		 */
+		configTWI.bit_rate=400000;
+		/*initializing I2C*/
+		TWI_init(&configTWI);
+	}
+	{
+		/*start configuring UART*/
+		UART_ConfigType configUART;
+		/*configuring baud rate*/
+		configUART.baud_rate=9600;
+		/*configuring parity bit*/
+		configUART.parity=UART_disable_parity;
+		/*configuring stop bit*/
+		configUART.stop_bit=UART_1_stopBit;
+		/*configuring word length*/
+		configUART.bit_data=UART_8_bit_data;
+		/*setting UART callback function*/
+		UART_setCallback(uartCallback);
+		UART_init(&configUART);
+	}
+	{
+		/*
+		 *configuring timer
+		 */
+		g_config_timer.mode=Timer1_compareMode;
+		g_config_timer.initial_value=0;
+		/*with pre-scaler 256 and compare value 31250 the counter count 1 second every tick*/
+		g_config_timer.compare_value=31250;
+		Timer1_setCallBack(Timer1Callback);
+	}
+
+}
+/*
+ *this function check if the memory works probably , send memoryError to the user if not
+ */
+void checkMemory(){
+	uint8 memoryWorks=0;
+	EEPROM_writeByte(checkMemoryAddress, checkingKey);
+	_delay_ms(50);
+	EEPROM_readByte(checkMemoryAddress,&memoryWorks);
+	if(memoryWorks!=checkingKey){
+		while(1){
+			_delay_ms(100);
+			UART_sendByte(memoryErrorCommand);
+		}
+	}
+	else return;
+}
+/*
+ *this function take steps of setting new password
+ */
+void setNewPass(void){
+	uint8 arr1[5],arr2[5];
+	uint8 i=0;
+	/*system will not get out of this loop until it have matched password*/
+	while(1){
+	getPass(arr1);
+	getPass(arr2);
+	for(i=0;i<5;i++)
+	{
+		if(arr1[i]==arr2[i])
+		{
+			continue;
+		} else {
+			/*
+			 *sending not matched command to human interface micro-controler
+			 */
+			UART_sendByte(setNewPass_nMatchCommand);
+			break;
+		}
+		/*if i=5 therefore system checked all characters are matched*/
+
+	}
+	if(i==5)
+		break;
+	}
+	/*
+	 *sending operation done to the other micro-controler
+	 */
+	UART_sendByte(setNewPass_MatchCommand);
+	/*
+	 *saving password in the EEPROM
+	 */
+	for(int i=0;i<5;i++){
+		EEPROM_writeByte((uint16)(passwordAddress+i),arr1[i]);
+		_delay_ms(50);
+	}
+	/*
+	 *writing at the EEPROM that there is a password in the system
+	 */
+	EEPROM_writeByte(checkFirstTimeAddress, checkingKey);
+	}
+int main (){
+	initializeSystem();
+	/*
+	 * waiting for the other micro-controller to get ready
+	 */
+	while(g_UART_received_data!=startHandshakeCommand){}
+	g_UART_receive_flag=0;
+	checkMemory();
+	isFirstTime();
+
+	while(1){
+
+		/*
+		 *waiting for any command from human interface micro-controller
+		 */
+		while(g_UART_receive_flag!=1);
+		g_UART_receive_flag=0;
+
+		/*
+		 *check what command it received
+		 */
+		switch (g_UART_received_data) {
+			case resetPassCommand:
+			{
+
+				if(checkPass())
+					{
+					setNewPass();
+					}
+
+			}
+				break;
+			case openDoorCommand:
+			{
+				if(checkPass())
+				{
+					openDoor();
+				}
+			}
+				break;
+		}
+
+	}
+}

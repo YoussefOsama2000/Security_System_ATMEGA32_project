@@ -1,0 +1,37 @@
+/******************************************************************************
+ *
+ * Module: TIMER1
+ *
+ * File Name: Timer1.c
+ *
+ * Description: source file for timer 1 driver
+ *
+ * Author: Youssef Osama
+ *
+ *******************************************************************************/
+#include "timer1.h"
+#include "avr/io.h"
+void Timer1_init(const Timer1_ConfigType * Config_Ptr){
+	/*
+	 * Enabling global interrupt
+	 */
+	SET_BIT(SREG,SPIE);
+	/*
+	 * setting timer mode (overflow or compare)
+	 */
+	TIMSK=Config_Ptr->mode;
+	/*
+	 * setting timer initial value
+	 */
+	TCNT1=Config_Ptr->initial_value;
+	TCCR1A = (1<<FOC1A)| (1<<FOC1B);
+	/*
+	 * choosing operation mode
+	 */
+	TCCR1B = (TCCR1B&(~(1<<WGM12)))|(Config_Ptr->mode<<WGM12);
+	/*
+	 * setting pre-scaler
+	 */
+	TCCR1B = (TCCR1B&(~((1<<CS12)|(1<<CS11)|(1<<CS10))))|(Config_Ptr->mode<<WGM12);
+
+}

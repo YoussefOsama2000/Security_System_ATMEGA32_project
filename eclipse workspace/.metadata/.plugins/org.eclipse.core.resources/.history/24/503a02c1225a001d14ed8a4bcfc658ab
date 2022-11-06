@@ -1,0 +1,16 @@
+ /******************************************************************************
+ *
+ * Module: TIMER1
+ *
+ * File Name: Timer1.c
+ *
+ * Description: source file for timer 1 driver
+ *
+ * Author: Youssef Osama
+ *
+ *******************************************************************************/
+#include "timer1.h"
+#include "avr/io.h"
+void Timer1_init(const Timer1_ConfigType * Config_Ptr){
+
+}
